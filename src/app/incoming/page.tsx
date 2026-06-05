@@ -9,6 +9,7 @@ import {
   fmtDate,
   EmptyState,
 } from "@/components/ui";
+import AutoRefresh from "@/components/AutoRefresh";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -39,7 +40,9 @@ export default async function IncomingPage({
         title="Incoming"
         subtitle="Replies and bounces detected by the email listener"
         right={
-          <div className="flex gap-1">
+          <div className="flex flex-col items-end gap-2">
+            <AutoRefresh intervalSeconds={30} />
+            <div className="flex gap-1">
             {FILTERS.map((f) => (
               <Link
                 key={f.key}
@@ -53,6 +56,7 @@ export default async function IncomingPage({
                 {f.label}
               </Link>
             ))}
+            </div>
           </div>
         }
       />

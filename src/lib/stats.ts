@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 
 /** Decode a JSON string column (SQLite has no native JSON type). */
@@ -269,4 +270,225 @@ export async function getIncoming(
     receivedAt: (r.receivedAt ?? r.createdAt).toISOString(),
     snippet: r.snippet,
   }));
+}
+
+// ---------------------------------------------------------------------------
+// Analytics: breakdowns & funnel
+// ---------------------------------------------------------------------------
+
+export interface BarItem {
+  label: string;
+  count: number;
+}
+
+export async function getTopCountries(limit = 8): Promise<BarItem[]> {
+  const rows = await prisma.leadEvent.groupBy({
+    by: ["country"],
+    where: { eventType: "lead_found", country: { not: null } },
+    _count: { _all: true },
+  });
+  return rows
+    .filter((r) => r.country && r.country.trim() !== "")
+    .map((r) => ({ label: r.country as string, count: r._count._all }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+export async function getTopNiches(limit = 8): Promise<BarItem[]> {
+  const rows = await prisma.leadEvent.groupBy({
+    by: ["niche"],
+    where: { eventType: "lead_found", niche: { not: null } },
+    _count: { _all: true },
+  });
+  return rows
+    .filter((r) => r.niche && r.niche.trim() !== "")
+    .map((r) => ({ label: r.niche as string, count: r._count._all }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, limit);
+}
+
+/** Filter option lists for the Leads page dropdowns. */
+export async function getLeadFilterOptions() {
+  const [countries, niches] = await Promise.all([
+    prisma.leadEvent.findMany({
+      where: { eventType: "lead_found", country: { not: null } },
+      distinct: ["country"],
+      select: { country: true },
+      orderBy: { country: "asc" },
+    }),
+    prisma.leadEvent.findMany({
+      where: { eventType: "lead_found", niche: { not: null } },
+      distinct: ["niche"],
+      select: { niche: true },
+      orderBy: { niche: "asc" },
+    }),
+  ]);
+  return {
+    countries: countries.map((c) => c.country).filter((v): v is string => !!v && v.trim() !== ""),
+    niches: niches.map((n) => n.niche).filter((v): v is string => !!v && v.trim() !== ""),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Paginated + filtered leads
+// ---------------------------------------------------------------------------
+
+export interface LeadQuery {
+  q?: string;
+  country?: string;
+  niche?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+function leadWhere(p: LeadQuery): Prisma.LeadEventWhereInput {
+  const and: Prisma.LeadEventWhereInput[] = [{ eventType: "lead_found" }];
+  if (p.q) {
+    and.push({
+      OR: [
+        { email: { contains: p.q } },
+        { companyName: { contains: p.q } },
+        { website: { contains: p.q } },
+      ],
+    });
+  }
+  if (p.country) and.push({ country: p.country });
+  if (p.niche) and.push({ niche: p.niche });
+  return { AND: and };
+}
+
+function serializeLead(r: {
+  id: string;
+  email: string | null;
+  companyName: string | null;
+  website: string | null;
+  country: string | null;
+  city: string | null;
+  niche: string | null;
+  sourceUrl: string | null;
+  createdAt: Date;
+}) {
+  return {
+    id: r.id,
+    email: r.email,
+    companyName: r.companyName,
+    website: r.website,
+    country: r.country,
+    city: r.city,
+    niche: r.niche,
+    sourceUrl: r.sourceUrl,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+export async function getLeadsPaged(p: LeadQuery) {
+  const pageSize = Math.min(Math.max(p.pageSize ?? 25, 1), 100);
+  const page = Math.max(p.page ?? 1, 1);
+  const where = leadWhere(p);
+  const [rows, total] = await Promise.all([
+    prisma.leadEvent.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.leadEvent.count({ where }),
+  ]);
+  return {
+    rows: rows.map(serializeLead),
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(Math.ceil(total / pageSize), 1),
+  };
+}
+
+export async function getLeadsForExport(p: LeadQuery) {
+  const rows = await prisma.leadEvent.findMany({
+    where: leadWhere(p),
+    orderBy: { createdAt: "desc" },
+    take: 10000,
+  });
+  return rows.map(serializeLead);
+}
+
+// ---------------------------------------------------------------------------
+// Paginated + filtered emails
+// ---------------------------------------------------------------------------
+
+export interface EmailQuery {
+  q?: string;
+  eventType?: string;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+function emailWhere(p: EmailQuery): Prisma.EmailEventWhereInput {
+  const and: Prisma.EmailEventWhereInput[] = [];
+  if (p.q) {
+    and.push({
+      OR: [
+        { email: { contains: p.q } },
+        { companyName: { contains: p.q } },
+        { subject: { contains: p.q } },
+      ],
+    });
+  }
+  if (p.eventType) and.push({ eventType: p.eventType });
+  if (p.status) and.push({ status: p.status });
+  return and.length ? { AND: and } : {};
+}
+
+function serializeEmail(r: {
+  id: string;
+  email: string | null;
+  companyName: string | null;
+  subject: string | null;
+  eventType: string;
+  status: string | null;
+  errorMessage: string | null;
+  createdAt: Date;
+}) {
+  return {
+    id: r.id,
+    email: r.email,
+    companyName: r.companyName,
+    subject: r.subject,
+    eventType: r.eventType,
+    status: r.status,
+    errorMessage: r.errorMessage,
+    createdAt: r.createdAt.toISOString(),
+  };
+}
+
+export async function getEmailsPaged(p: EmailQuery) {
+  const pageSize = Math.min(Math.max(p.pageSize ?? 25, 1), 100);
+  const page = Math.max(p.page ?? 1, 1);
+  const where = emailWhere(p);
+  const [rows, total] = await Promise.all([
+    prisma.emailEvent.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+    prisma.emailEvent.count({ where }),
+  ]);
+  return {
+    rows: rows.map(serializeEmail),
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(Math.ceil(total / pageSize), 1),
+  };
+}
+
+export async function getEmailsForExport(p: EmailQuery) {
+  const rows = await prisma.emailEvent.findMany({
+    where: emailWhere(p),
+    orderBy: { createdAt: "desc" },
+    take: 10000,
+  });
+  return rows.map(serializeEmail);
 }
