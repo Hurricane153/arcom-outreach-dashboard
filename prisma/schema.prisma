@@ -104,6 +104,33 @@ model DailyStats {
   @@index([date])
 }
 
+/// Single-row config for the dashboard-driven autopilot scheduler.
+model AutopilotConfig {
+  id              String    @id @default("default")
+  enabled         Boolean   @default(false)
+  leadsPerRun     Int       @default(10)
+  intervalMinutes Int       @default(1440) // 24h
+  brief           String? // optional niche/location text appended to the count
+  chatId          String? // optional Telegram chat id for the run summary
+  lastRunAt       DateTime?
+  nextRunAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+}
+
+/// Log of outreach runs triggered from the dashboard (manual or autopilot).
+model RunTrigger {
+  id        String   @id @default(cuid())
+  source    String // manual | autopilot
+  count     Int
+  brief     String?
+  ok        Boolean  @default(false)
+  message   String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+}
+
 /// An incoming email detected by the IMAP listener (reply or bounce).
 model IncomingEmailEvent {
   id         String   @id @default(cuid())
