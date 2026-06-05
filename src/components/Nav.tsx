@@ -15,6 +15,14 @@ const LINKS = [
 export default function Nav() {
   const pathname = usePathname();
 
+  // No chrome on the login screen.
+  if (pathname === "/login") return null;
+
+  async function logout() {
+    await fetch("/api/auth/logout", { method: "POST" });
+    window.location.href = "/login";
+  }
+
   return (
     <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/90 backdrop-blur">
       <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
@@ -45,6 +53,12 @@ export default function Nav() {
               </Link>
             );
           })}
+          <button
+            onClick={logout}
+            className="ml-1 rounded-md px-3 py-1.5 text-sm font-medium text-slate-500 hover:bg-slate-100"
+          >
+            Log out
+          </button>
         </nav>
       </div>
     </header>
