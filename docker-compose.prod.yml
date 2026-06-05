@@ -25,6 +25,17 @@ services:
       # Host 3001 -> container 3000. Open the firewall for 3001 only if you want
       # to reach the UI directly at http://<vps-ip>:3001
       - "3001:3000"
+    networks:
+      # own network (for the published port) + n8n's network so n8n can reach
+      # this container by name at http://arcom-dashboard:3000
+      - default
+      - n8n
 
 volumes:
   arcom_dashboard_data:
+
+networks:
+  n8n:
+    external: true
+    # n8n's docker network. Override with N8N_NETWORK in .env if yours differs.
+    name: ${N8N_NETWORK:-root_default}
