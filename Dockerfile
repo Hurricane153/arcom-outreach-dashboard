@@ -10,7 +10,9 @@ RUN apt-get update -y && apt-get install -y --no-install-recommends openssl ca-c
 # ---- dependencies ----
 FROM base AS deps
 COPY package.json package-lock.json* ./
-RUN npm ci
+# --ignore-scripts: skip the postinstall "prisma generate" here (schema isn't
+# copied yet). Prisma client is generated in the build stage via `npm run build`.
+RUN npm ci --ignore-scripts
 
 # ---- build ----
 FROM base AS build
