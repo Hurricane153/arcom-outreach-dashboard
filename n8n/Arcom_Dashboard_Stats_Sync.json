@@ -1,0 +1,92 @@
+{
+  "name": "Arcom Dashboard Stats Sync",
+  "nodes": [
+    {
+      "id": "sync-schedule",
+      "name": "Every 15 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-600, 0],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] }
+      }
+    },
+    {
+      "id": "sync-read-sheet",
+      "name": "Read Sent Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-380, 0],
+      "alwaysOutputData": true,
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1DNA2ttiZE1NzWpxJ2N_zwCE7KZxIIPa7-Fgel_qFVVQ",
+          "mode": "list",
+          "cachedResultName": "KlijentiOutreach_Tracker",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DNA2ttiZE1NzWpxJ2N_zwCE7KZxIIPa7-Fgel_qFVVQ/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 572639152,
+          "mode": "list",
+          "cachedResultName": "Sent",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1DNA2ttiZE1NzWpxJ2N_zwCE7KZxIIPa7-Fgel_qFVVQ/edit#gid=572639152"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": { "id": "WdVxUYuhkjxGxNdD", "name": "Google auth" }
+      },
+      "notes": "READ-ONLY. Same sheet/tab the outreach workflow writes to. This workflow never writes back."
+    },
+    {
+      "id": "sync-build-payload",
+      "name": "Build Sync Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-160, 0],
+      "parameters": {
+        "jsCode": "// Normalize every Sent-sheet row into the dashboard's expected shape.\n// Produces ONE item carrying the full batch. No emails are sent, sheet is not modified.\nfunction s(v){ return String(v == null ? '' : v).trim(); }\nconst rows = $input.all().map(i => i.json || {});\nconst norm = rows\n  .filter(r => s(r.email))\n  .map(r => ({\n    email: s(r.email).toLowerCase(),\n    companyName: s(r.business_name),\n    business_name: s(r.business_name),\n    website: s(r.website),\n    country: s(r.country),\n    city: s(r.city),\n    niche: s(r.niche),\n    language: s(r.language),\n    subject: s(r.subject),\n    message_text: s(r.message_text),\n    follow_up_subject: s(r.follow_up_subject),\n    follow_up_text: s(r.follow_up_text),\n    status: s(r.status),\n    timestamp_sent: s(r.timestamp_sent),\n    follow_up_due_date: s(r.follow_up_due_date),\n    follow_up_sent_at: s(r.follow_up_sent_at)\n  }));\nreturn [{ json: {\n  source: 'google_sheets_sync',\n  workflowName: 'KlijentiTrazenjeAutomatizacija_v10_jezici',\n  syncedAt: new Date().toISOString(),\n  rowCount: norm.length,\n  rows: norm\n} }];"
+      }
+    },
+    {
+      "id": "sync-post",
+      "name": "POST sync-batch to Dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [80, 0],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DASHBOARD_API_URL }}/api/n8n/sync-batch",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-N8N-Secret", "value": "={{ $env.N8N_DASHBOARD_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "response": { "response": { "neverError": true } },
+          "timeout": 30000
+        }
+      },
+      "notes": "Sends the whole batch once. neverError=true so a dashboard outage never breaks the sync."
+    }
+  ],
+  "connections": {
+    "Every 15 Minutes": {
+      "main": [[{ "node": "Read Sent Sheet", "type": "main", "index": 0 }]]
+    },
+    "Read Sent Sheet": {
+      "main": [[{ "node": "Build Sync Payload", "type": "main", "index": 0 }]]
+    },
+    "Build Sync Payload": {
+      "main": [[{ "node": "POST sync-batch to Dashboard", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}

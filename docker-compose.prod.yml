@@ -1,0 +1,30 @@
+# Production deployment for the Arcom Outreach Dashboard.
+# Runs alongside n8n on the same VPS. Reads N8N_DASHBOARD_SECRET / NEXT_PUBLIC_APP_URL
+# from a local .env file (see .env.production.example).
+#
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# After it's up, connect it to n8n's docker network so n8n can reach it by name:
+#   docker network connect <n8n_network_name> arcom-dashboard
+# Then in n8n set:  DASHBOARD_API_URL = http://arcom-dashboard:3000
+
+services:
+  arcom-dashboard:
+    build: .
+    image: arcom-dashboard:latest
+    container_name: arcom-dashboard
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      # SQLite DB lives in a named volume so it survives rebuilds/restarts.
+      DATABASE_URL: "file:/data/dev.db"
+    volumes:
+      - arcom_dashboard_data:/data
+    ports:
+      # Host 3001 -> container 3000. Open the firewall for 3001 only if you want
+      # to reach the UI directly at http://<vps-ip>:3001
+      - "3001:3000"
+
+volumes:
+  arcom_dashboard_data:

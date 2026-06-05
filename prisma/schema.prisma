@@ -1,0 +1,130 @@
+// Prisma schema for the Arcom Outreach Dashboard
+// Datasource: PostgreSQL. Run `npx prisma migrate dev` to create tables.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  // SQLite: zero-setup, file-based. No database server or Docker required.
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// A single execution of the outreach workflow, a search request, or a sync run.
+model WorkflowRun {
+  id             String    @id @default(cuid())
+  runId          String    @unique
+  source         String? // e.g. "n8n", "google_sheets_sync", "telegram_1"
+  workflowName   String?
+  rawBrief       String?
+  requestedCount Int?
+  status         String    @default("running") // running | finished | failed
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  stats          String? // JSON-encoded counters captured at finish time
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  leadEvents  LeadEvent[]
+  emailEvents EmailEvent[]
+
+  @@index([createdAt])
+  @@index([status])
+}
+
+/// A lead-related event (lead_found, skipped_duplicate, ...).
+model LeadEvent {
+  id            String   @id @default(cuid())
+  workflowRunId String?
+  workflowRun   WorkflowRun? @relation(fields: [workflowRunId], references: [id], onDelete: SetNull)
+
+  email       String?
+  companyName String?
+  website     String?
+  country     String?
+  city        String?
+  niche       String?
+  sourceUrl   String?
+  eventType   String // lead_found | skipped_duplicate | synced_from_sheet | ...
+  metadata    String? // JSON-encoded raw payload
+
+  /// Stable key for idempotent ingestion. Null = always insert.
+  dedupeKey String? @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([eventType])
+  @@index([email])
+  @@index([workflowRunId])
+}
+
+/// An email-related event (email_generated, email_sent, followup_sent, failed, reply_detected, bounce_detected).
+model EmailEvent {
+  id            String   @id @default(cuid())
+  workflowRunId String?
+  workflowRun   WorkflowRun? @relation(fields: [workflowRunId], references: [id], onDelete: SetNull)
+
+  email        String?
+  companyName  String?
+  subject      String?
+  eventType    String // email_generated | email_sent | followup_sent | failed | reply_detected | bounce_detected
+  status       String? // sent | followed_up | replied | bounced | failed | ...
+  errorMessage String?
+  metadata     String? // JSON-encoded raw payload
+
+  /// Stable key for idempotent ingestion. Null = always insert.
+  dedupeKey String? @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([eventType])
+  @@index([email])
+  @@index([status])
+  @@index([workflowRunId])
+}
+
+/// Daily rollup of activity counters, keyed by calendar date (UTC).
+model DailyStats {
+  id              String   @id @default(cuid())
+  // Stored as midnight-UTC DateTime (SQLite has no DATE type).
+  date            DateTime @unique
+  leadsFound      Int      @default(0)
+  emailsGenerated Int      @default(0)
+  emailsSent      Int      @default(0)
+  followupsSent   Int      @default(0)
+  repliesDetected Int      @default(0)
+  bouncesDetected Int      @default(0)
+  failures        Int      @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([date])
+}
+
+/// An incoming email detected by the IMAP listener (reply or bounce).
+model IncomingEmailEvent {
+  id         String   @id @default(cuid())
+  email      String?
+  emailLower String?
+  fromName   String?
+  subject    String?
+  messageId  String?
+  threadId   String?
+  eventType  String // reply_detected | bounce_detected
+  receivedAt DateTime?
+  snippet    String?
+  metadata   String? // JSON-encoded raw payload
+
+  /// Stable key for idempotent ingestion (messageId + eventType).
+  dedupeKey String? @unique
+
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([eventType])
+  @@index([emailLower])
+  @@index([messageId])
+}

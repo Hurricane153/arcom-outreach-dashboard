@@ -1,0 +1,129 @@
+{
+  "name": "Arcom Incoming Email Listener",
+  "nodes": [
+    {
+      "id": "imap-trigger",
+      "name": "IMAP Email Trigger",
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2.1,
+      "position": [-700, 0],
+      "parameters": {
+        "mailbox": "INBOX",
+        "postProcessAction": "read",
+        "format": "resolved",
+        "options": {}
+      },
+      "notes": "Select/create an IMAP credential for info@arcom-technologies.hr (the outreach inbox). format=resolved exposes headers needed for bounce parsing."
+    },
+    {
+      "id": "normalize-incoming",
+      "name": "Normalize Incoming Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-480, 0],
+      "parameters": {
+        "jsCode": "// Robustly extract sender, subject, body, ids and headers from any IMAP output shape.\nfunction s(v){ return String(v == null ? '' : v).trim(); }\nconst j = $input.first().json || {};\n\nlet fromEmail = '', fromName = '';\nconst from = j.from;\nif (from && typeof from === 'object') {\n  if (Array.isArray(from.value) && from.value[0]) { fromEmail = from.value[0].address || ''; fromName = from.value[0].name || ''; }\n  else { fromEmail = from.address || ''; fromName = from.name || ''; }\n} else if (typeof from === 'string') {\n  const m = from.match(/<([^>]+)>/);\n  fromEmail = m ? m[1] : from;\n  fromName = from.replace(/<[^>]+>/, '').replace(/^\\\"|\\\"$/g, '').trim();\n}\nif (!fromEmail) fromEmail = j.fromEmail || j.sender || '';\nfromEmail = s(fromEmail).toLowerCase();\n\nconst subject = s(j.subject);\nconst received_at = s(j.date || j.receivedAt) || new Date().toISOString();\nconst rawText = s(j.textPlain || j.text || j.textAsHtml || j.textHtml || j.html || j.snippet);\nconst snippet = rawText.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 300);\n\nlet headersObj = {};\ntry {\n  if (j.headers && typeof j.headers === 'object') headersObj = j.headers;\n  else if (j.headerLines && Array.isArray(j.headerLines)) {\n    for (const h of j.headerLines) headersObj[s(h.key).toLowerCase()] = s(h.line);\n  }\n} catch (e) {}\nconst headers_text = (() => { try { return JSON.stringify(headersObj); } catch { return ''; } })();\n\nconst message_id = s(j.messageId || headersObj['message-id'] || '');\nconst thread_id = s(j.inReplyTo || headersObj['in-reply-to'] || (Array.isArray(j.references) ? j.references[0] : j.references) || headersObj['references'] || '');\n\nreturn [{ json: {\n  from_email: fromEmail,\n  from_name: fromName,\n  subject,\n  received_at,\n  snippet,\n  message_id,\n  thread_id,\n  headers_text,\n  raw_text: rawText\n} }];"
+      }
+    },
+    {
+      "id": "detect-bounce",
+      "name": "Detect Reply or Bounce",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-260, 0],
+      "parameters": {
+        "jsCode": "// Classify the email and, for bounces, try to recover the failed recipient.\nfunction s(v){ return String(v == null ? '' : v).trim(); }\nconst j = $input.first().json || {};\nconst subject = (j.subject || '').toLowerCase();\nconst from = (j.from_email || '').toLowerCase();\nconst body = (j.raw_text || '').toLowerCase();\nconst headers = (j.headers_text || '').toLowerCase();\n\nconst BOUNCE_SIGNALS = ['mailer-daemon','postmaster@','mail delivery','delivery status notification','undelivered mail','delivery has failed','returned to sender','failure notice','undeliverable','message not delivered','550 5.1.1','user unknown','recipient address rejected','does not exist'];\nconst isBounce = BOUNCE_SIGNALS.some(sig => subject.includes(sig) || from.includes(sig) || body.includes(sig)) || /report-type=delivery-status/.test(headers) || /content-type:\\s*multipart\\/report/.test(headers);\n\nfunction grab(re, hay){ const m = hay.match(re); return m && m[1] ? m[1] : ''; }\nlet bounced = grab(/final-recipient:[^\\n]*?([a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,})/i, body)\n  || grab(/x-failed-recipients[^a-z0-9]*?([a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,})/i, headers)\n  || grab(/original-recipient:[^\\n]*?([a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,})/i, body)\n  || grab(/([a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,})/i, body);\nbounced = s(bounced).toLowerCase();\n\nconst event_type = isBounce ? 'bounce_detected' : 'reply_detected';\nconst email = event_type === 'bounce_detected' ? (bounced || j.from_email) : j.from_email;\n\nreturn [{ json: { ...j, event_type, detected_bounced_recipient: bounced, email } }];"
+      }
+    },
+    {
+      "id": "route-reply-bounce",
+      "name": "Route Reply vs Bounce",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-40, 0],
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 2 },
+          "conditions": [
+            {
+              "id": "is-bounce",
+              "leftValue": "={{ $json.event_type }}",
+              "rightValue": "bounce_detected",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "log-bounce",
+      "name": "Log Bounce to Dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [200, -120],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DASHBOARD_API_URL }}/api/n8n/bounce-detected",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-N8N-Secret", "value": "={{ $env.N8N_DASHBOARD_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ email: ($json.detected_bounced_recipient || $json.from_email), fromName: $json.from_name, subject: $json.subject, messageId: $json.message_id, threadId: $json.thread_id, receivedAt: $json.received_at, snippet: $json.snippet, eventType: 'bounce_detected', metadata: $json }) }}",
+        "options": {
+          "response": { "response": { "neverError": true } },
+          "timeout": 30000
+        }
+      }
+    },
+    {
+      "id": "log-reply",
+      "name": "Log Reply to Dashboard",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.3,
+      "position": [200, 120],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DASHBOARD_API_URL }}/api/n8n/reply-detected",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "X-N8N-Secret", "value": "={{ $env.N8N_DASHBOARD_SECRET }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ email: $json.from_email, fromName: $json.from_name, subject: $json.subject, messageId: $json.message_id, threadId: $json.thread_id, receivedAt: $json.received_at, snippet: $json.snippet, eventType: 'reply_detected', metadata: $json }) }}",
+        "options": {
+          "response": { "response": { "neverError": true } },
+          "timeout": 30000
+        }
+      }
+    }
+  ],
+  "connections": {
+    "IMAP Email Trigger": {
+      "main": [[{ "node": "Normalize Incoming Email", "type": "main", "index": 0 }]]
+    },
+    "Normalize Incoming Email": {
+      "main": [[{ "node": "Detect Reply or Bounce", "type": "main", "index": 0 }]]
+    },
+    "Detect Reply or Bounce": {
+      "main": [[{ "node": "Route Reply vs Bounce", "type": "main", "index": 0 }]]
+    },
+    "Route Reply vs Bounce": {
+      "main": [
+        [{ "node": "Log Bounce to Dashboard", "type": "main", "index": 0 }],
+        [{ "node": "Log Reply to Dashboard", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" }
+}
